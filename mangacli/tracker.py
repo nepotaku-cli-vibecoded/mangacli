@@ -3,11 +3,7 @@ from datetime import datetime, timezone
 
 
 def _path():
-    if os.name == 'nt':
-        base = os.environ.get('APPDATA', os.path.expanduser('~'))
-    else:
-        base = os.environ.get('XDG_CONFIG_HOME', os.path.expanduser('~/.config'))
-    d = os.path.join(base, 'man-cli')
+    d = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data')
     os.makedirs(d, exist_ok=True)
     return os.path.join(d, 'history.gz')
 

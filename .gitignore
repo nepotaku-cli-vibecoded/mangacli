@@ -3,3 +3,4 @@ __pycache__/
 build/
 test_*.py
 temp_img_load/
+data/
