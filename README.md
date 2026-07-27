@@ -6,8 +6,8 @@ A multi-source terminal manga reader — search, browse, and read manga directly
 
 ## Features
 
-- **Multiple sources** — searches and merges results from Weebcentral, Comix, and Mangaread (no duplicates)
-- **Auto quality preference** — picks the source with more PNG images (higher quality)
+- **Multiple sources** — searches and merges results from Weebcentral, Mangataro, and Mangaread (no duplicates)
+- **Auto quality preference** — picks the source with the largest image file size (HEAD Content-Length check)
 - **Parallel downloads** — downloads chapter pages concurrently (8 workers) for faster loading
 - **Fullscreen viewer** — opens mpv in fullscreen with arrow key navigation
 - **Reading history** — tracks last and highest chapter read per manga
@@ -22,7 +22,6 @@ A multi-source terminal manga reader — search, browse, and read manga directly
 | **Python 3.8+** | [python.org](https://python.org) or system package |
 | **mpv** | `winget install mpv` (Windows) / `sudo apt install mpv` (Debian) / `sudo pacman -S mpv` (Arch) / `brew install mpv` (macOS) |
 | **requests** | `pip install requests` |
-| **cloudscraper** | `pip install cloudscraper` |
 
 ## Install
 
@@ -35,7 +34,6 @@ Clone or download the repo, then double-click `app_of_cli\Manga.exe` — it laun
 ```powershell
 git clone https://github.com/nepotaku-cli-vibecoded/mangacli
 cd mangacli
-pip install requests cloudscraper
 pip install .
 man-cli
 ```
@@ -52,7 +50,6 @@ If `man-cli` isn't found, add Python Scripts to PATH:
 ```bash
 git clone https://github.com/nepotaku-cli-vibecoded/mangacli
 cd mangacli
-pip install requests cloudscraper
 pip install .
 man-cli
 ```
@@ -109,7 +106,7 @@ After that, every chapter you read is silently synced to your AniList list. If a
 1. **Search** queries multiple sources simultaneously
 2. Results are merged by normalized title — no duplicates if multiple sources have the same manga
 3. When reading a chapter, all available sources are checked for page availability
-4. The source with more **PNG** images is preferred (higher quality)
+4. The source with the largest image file size is preferred (HEAD Content-Length check)
 5. Pages are downloaded in parallel (8 threads) for speed
 6. mpv displays the images in fullscreen with keyboard navigation
 7. Downloaded images are cleaned up after you finish the chapter
@@ -120,7 +117,7 @@ After that, every chapter you read is silently synced to your AniList list. If a
 - Images are cached to `temp_img_load/` and cleaned up after reading
 - The reader uses mpv for full-resolution image viewing (not ASCII/block art)
 - AniList requires browser authorization once — no passwords stored
-- Reading history is stored in `%APPDATA%/man-cli/history.gz`
+- Reading history is stored in `data/history.gz` (project-local)
 
 ## Disclaimer
 
