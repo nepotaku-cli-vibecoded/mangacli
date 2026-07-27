@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "man-cli"
-version = "0.3.0"
-description = "Multi-source terminal manga reader"
+version = "1.0.0"
+description = "Multi-source terminal manga reader with AniList tracking"
 requires-python = ">=3.8"
 dependencies = [
     "requests>=2.28",
