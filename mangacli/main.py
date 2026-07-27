@@ -67,21 +67,6 @@ def _mpv_view(files, title):
     os.unlink(conf.name)
 
 
-def menu(opts, prompt="Select: "):
-    items = list(opts.items()) if isinstance(opts, dict) else list(opts)
-    for i, (k, v) in enumerate(items, 1):
-        title = v[:120] + "..." if len(v) > 123 else v
-        print(f"  {i:>3}. {title}")
-    print(f"    0. Back")
-    try:
-        c = int(input(prompt))
-        if c == 0:
-            return None
-        return items[c - 1][0]
-    except (ValueError, IndexError):
-        return None
-
-
 def _download_images(urls, tmp, headers):
     files = [None] * len(urls)
     print(f"  Downloading {len(urls)} pages...", end="", flush=True)
@@ -107,6 +92,21 @@ def _download_images(urls, tmp, headers):
     valid = [f for f in files if f]
     print(f" done ({len(valid)}/{len(urls)})")
     return valid
+
+
+def menu(opts, prompt="Select: "):
+    items = list(opts.items()) if isinstance(opts, dict) else list(opts)
+    for i, (k, v) in enumerate(items, 1):
+        title = v[:120] + "..." if len(v) > 123 else v
+        print(f"  {i:>3}. {title}")
+    print(f"    0. Back")
+    try:
+        c = int(input(prompt))
+        if c == 0:
+            return None
+        return items[c - 1][0]
+    except (ValueError, IndexError):
+        return None
 
 
 MEME_FACTS = [

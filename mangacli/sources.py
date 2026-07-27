@@ -1,135 +1,30 @@
 import re, html, json, requests
-import cloudscraper
 
-class Comix:
-    name = "comix"
-    API_BASE = "https://comix-api.vercel.app"
-    BASE = "https://comix.to"
+class Mangataro:
+    name = "mangataro"
+    API_BASE = "https://manga-scrape-api.vercel.app/api/scrape"
     HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
-    def __init__(self):
-        self._session = requests.Session()
-        self._session.headers.update(self.HEADERS)
-
     def search(self, query):
-        out = []
-        try:
-            if not query:
-                r = self._session.get(f"{self.API_BASE}/api/manga/home", timeout=15)
-                if r.ok:
-                    data = r.json()
-                    popular = data.get("popular", []) + data.get("latest", [])
-                    seen = set()
-                    for item in popular:
-                        sid = item.get("id") or (item.get("link", "").split("/")[-1] if item.get("link") else None)
-                        title = item.get("title")
-                        if sid and title and sid not in seen:
-                            seen.add(sid)
-                            out.append({"slug": sid, "title": title, "source": self.name})
-            else:
-                r = self._session.get(f"{self.API_BASE}/api/manga/search", params={"q": query}, timeout=15)
-                if r.ok:
-                    data = r.json()
-                    results = data.get("results", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-                    for item in results:
-                        sid = item.get("id") or (item.get("link", "").split("/")[-1] if item.get("link") else None)
-                        title = item.get("title")
-                        if sid and title:
-                            out.append({"slug": sid, "title": title, "source": self.name})
-        except Exception:
-            pass
-
-        if not out and query:
-            try:
-                scraper = cloudscraper.create_scraper()
-                r = scraper.get("https://comix.to/", timeout=20)
-                if r.ok:
-                    match = re.search(r'<script[^>]*id="initial-data"[^>]*>(.*?)</script>', r.text, re.DOTALL)
-                    if match:
-                        bdata = json.loads(match.group(1))
-                        ql = query.lower()
-                        seen = set()
-                        for qk, qv in bdata.get("queries", {}).items():
-                            if isinstance(qv, dict):
-                                for sub in ([qv] if "items" in qv else [v for v in qv.values() if isinstance(v, dict) and "items" in v]):
-                                    for item in sub.get("items", []):
-                                        if isinstance(item, dict):
-                                            title = item.get("title")
-                                            hid = item.get("hid") or item.get("id")
-                                            if title and hid and ql in title.lower() and hid not in seen:
-                                                seen.add(hid)
-                                                out.append({"slug": str(hid), "title": title, "source": self.name})
-            except Exception:
-                pass
-        return out
+        if not query:
+            return []
+        r = requests.get(f"{self.API_BASE}/search", params={"query": query, "provider": "mangataro"}, timeout=15)
+        data = r.json()
+        return [{"slug": item["id"], "title": item["title"], "source": self.name} for item in data.get("results", [])]
 
     def chapters(self, slug):
+        r = requests.get(f"{self.API_BASE}/chapters", params={"id": slug, "provider": "mangataro"}, timeout=15)
         out = []
-        try:
-            r = self._session.get(f"{self.API_BASE}/api/manga/{slug}", timeout=15)
-            if r.ok:
-                data = r.json()
-                chs = data.get("chapters", [])
-                for ch in chs:
-                    num = str(ch.get("number") or ch.get("num") or "0")
-                    ch_id = ch.get("id") or ch.get("url")
-                    if ch_id:
-                        out.append({"url": str(ch_id), "num": num})
-        except Exception:
-            pass
-
-        if not out:
-            try:
-                url = f"{self.BASE}/title/{slug}"
-                r_html = self._session.get(url, timeout=15)
-                if r_html.ok:
-                    script_match = re.search(r'<script[^>]*>\s*(\{"page":.*?\})\s*</script>', r_html.text, re.DOTALL)
-                    if script_match:
-                        tdata = json.loads(script_match.group(1))
-                        for qk, qv in tdata.get("queries", {}).items():
-                            if isinstance(qv, dict) and "chapters" in qv:
-                                for ch in qv["chapters"]:
-                                    num = str(ch.get("number") or ch.get("num") or "0")
-                                    ch_id = ch.get("id") or ch.get("hid") or ch.get("url")
-                                    if ch_id:
-                                        out.append({"url": str(ch_id), "num": num})
-            except Exception:
-                pass
-
-        seen = set()
-        cleaned = []
-        for ch in out:
-            num = ch["num"].replace("-", ".")
-            if num not in seen:
-                seen.add(num)
-                try:
-                    fnum = float(num)
-                except ValueError:
-                    fnum = 0.0
-                cleaned.append((ch["url"], num, fnum))
-        cleaned.sort(key=lambda x: x[2])
-        return [{"url": u, "num": n} for u, n, _ in cleaned]
+        for ch in r.json().get("chapters", []):
+            num = str(ch["number"])
+            out.append({"url": f"{slug}:{num}", "num": num})
+        out.sort(key=lambda x: float(x["num"]))
+        return out
 
     def pages(self, chapter_url):
-        try:
-            r = self._session.get(f"{self.API_BASE}/api/manga/read", params={"chapterId": chapter_url}, timeout=15)
-            if r.ok:
-                data = r.json()
-                pages = data.get("pages", []) or data.get("images", [])
-                if isinstance(pages, list) and pages:
-                    return [p if p.startswith("http") else f"{self.API_BASE}{p}" for p in pages]
-        except Exception:
-            pass
-
-        try:
-            if chapter_url.startswith("http"):
-                r_html = self._session.get(chapter_url, timeout=15)
-                if r_html.ok:
-                    imgs = re.findall(r'<img[^>]*src=[\'"]([^\'"]+)[\'"]', r_html.text, re.DOTALL | re.IGNORECASE)
-                    return [i.strip() for i in imgs if "static.comix.to" in i or "cdn" in i or "storage" in i]
-        except Exception:
-            pass
-        return []
+        slug, num = chapter_url.split(":", 1)
+        r = requests.get(f"{self.API_BASE}/pages", params={"id": slug, "chapterNumber": num, "provider": "mangataro"}, timeout=15)
+        return [p["url"] for p in r.json().get("pages", [])]
 
 
 class Mangaread:
@@ -265,7 +160,7 @@ class Weebcentral:
 
 class SourceManager:
     def __init__(self):
-        self.sources = [Weebcentral(), Comix(), Mangaread()]
+        self.sources = [Weebcentral(), Mangataro(), Mangaread()]
 
     @staticmethod
     def _normalize(title):
@@ -311,43 +206,34 @@ class SourceManager:
                 pass
         return [merged[k] for k in sorted(merged.keys(), key=lambda x: float(x.replace("-", ".")) if x.replace("-", "").replace(".", "").isdigit() else 0)]
 
-    def _count_pages(self, chapter_url, source):
+    @staticmethod
+    def _img_size(url, headers):
         try:
-            pages = source.pages(chapter_url)
-            return len(pages), pages
+            r = requests.head(url, headers=headers, timeout=10)
+            return int(r.headers.get("Content-Length", 0)) or 0
         except Exception:
-            return 0, []
+            return 0
 
     def best_pages(self, chapter):
-        # 1. Weebcentral as primary source
-        if "weebcentral" in chapter["sources"]:
-            src = next((s for s in self.sources if s.name == "weebcentral"), None)
-            if src:
-                ch_url = chapter["sources"]["weebcentral"]
-                count, urls = self._count_pages(ch_url, src)
-                if count > 0:
-                    headers = getattr(src, "IMG_HEADERS", getattr(src, "HEADERS", {"User-Agent": "Mozilla/5.0"}))
-                    return "weebcentral", urls, count, headers
-
-        # 2. Fall back to secondary sources
         candidates = []
-        for src_name in ("comix", "mangaread"):
-            if src_name not in chapter["sources"]:
+        for src in self.sources:
+            if src.name not in chapter["sources"]:
                 continue
-            src = next((s for s in self.sources if s.name == src_name), None)
-            if not src:
+            ch_url = chapter["sources"][src.name]
+            try:
+                urls = src.pages(ch_url)
+            except Exception:
                 continue
-            ch_url = chapter["sources"][src_name]
-            count, urls = self._count_pages(ch_url, src)
-            if count > 0:
-                headers = getattr(src, "IMG_HEADERS", getattr(src, "HEADERS", {"User-Agent": "Mozilla/5.0"}))
-                png_count = sum(1 for u in urls if ".png" in u.lower() or ".png?" in u.lower())
-                candidates.append((src_name, urls, count, headers, png_count))
+            if not urls:
+                continue
+            headers = getattr(src, "IMG_HEADERS", getattr(src, "HEADERS", {"User-Agent": "Mozilla/5.0"}))
+            size = self._img_size(urls[0], headers)
+            candidates.append((src.name, urls, len(urls), headers, size))
 
         if not candidates:
             return None, [], 0, {}
 
-        candidates.sort(key=lambda c: (c[2], c[4]), reverse=True)
+        candidates.sort(key=lambda c: c[4], reverse=True)
         best = candidates[0]
         return best[0], best[1], best[2], best[3]
 
