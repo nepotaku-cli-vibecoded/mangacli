@@ -10,7 +10,6 @@ class Mangataro:
     name = "mangataro"
     API_BASE = "https://manga-scrape-api.vercel.app/api/scrape"
     HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    ORG = "https://mangataro.org"
     CDN = "https://mangataro.yachts"
     _page_cache = {}
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import sys, io, os, re, tempfile, shutil, subprocess, random
+import sys, io, os, tempfile, shutil, subprocess, random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 
@@ -166,7 +166,7 @@ MEME_FACTS = [
     "your terminal has seen things it cannot unsee",
     "this is peak performance. don't look at the code.",
     "this is not a hackathon project. it just looks like one.",
-    "weebcentral is not a real place. you cannot be hurt there.",
+
     "50% of the code is regex. the other 50% is praying.",
     "the chapter you want is always on the source that's down.",
     "this tool has more sources than your average anime adaptation",
@@ -181,13 +181,6 @@ MEME_FACTS = [
     "/tmp/manga_* is the modern equivalent of a stack of books under your bed",
     "broken? fix it yourself",
 ]
-
-def meme_loading(percent, total):
-    bar_len = 20
-    filled = int(bar_len * percent / total) if total else 0
-    bar = "▓" * filled + "░" * (bar_len - filled)
-    fact = random.choice(MEME_FACTS) if percent == 1 else ""
-    return f"  {bar} {percent}/{total} {fact}"
 
 
 def _mpv_view_vol(files, title):
@@ -207,7 +200,7 @@ def _mpv_view_vol(files, title):
 
 def _prefetch_pages(ch, cache_dir, chosen_src=None):
     try:
-        best_src, page_urls, count, dl_headers = sm.get_pages(ch, chosen_src)
+        best_src, page_urls, _, dl_headers = sm.get_pages(ch, chosen_src)
         if not page_urls:
             return None, None, None
         tmp = tempfile.mkdtemp(prefix="manga_", dir=cache_dir)
@@ -280,7 +273,7 @@ def _read_manga(manga, jump_chapter=None, resume_vol=None, resume_source=None):
 
         while True:
             print(f"  Fetching Ch.{cur_ch['num']}...")
-            best_src, page_urls, count, dl_headers = sm.get_pages(cur_ch, chosen_src)
+            best_src, page_urls, _, dl_headers = sm.get_pages(cur_ch, chosen_src)
             if not page_urls:
                 input("  No pages found. Press Enter...")
                 break
@@ -375,7 +368,7 @@ def _read_volume(manga, vol_map, chs, start_vol=None, start_ch=None, chosen_src=
 
             if prefetch_future is None:
                 print(f"  ⟳ Vol.{start_vol} Ch.{ch_num}...")
-                best_src, page_urls, count, dl_headers = sm.get_pages(ch, chosen_src)
+                best_src, page_urls, _, dl_headers = sm.get_pages(ch, chosen_src)
                 if not page_urls:
                     input("  No pages found. Press Enter...")
                     ci += 1
