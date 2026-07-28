@@ -1,9 +1,18 @@
-import re, html, json, requests
+import re, requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+def natural_key(s):
+    return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', str(s))]
+
 
 class Mangataro:
     name = "mangataro"
     API_BASE = "https://manga-scrape-api.vercel.app/api/scrape"
     HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    ORG = "https://mangataro.org"
+    CDN = "https://mangataro.yachts"
+    _page_cache = {}
 
     def search(self, query):
         if not query:
@@ -12,228 +21,154 @@ class Mangataro:
         data = r.json()
         return [{"slug": item["id"], "title": item["title"], "source": self.name} for item in data.get("results", [])]
 
-    def chapters(self, slug):
-        r = requests.get(f"{self.API_BASE}/chapters", params={"id": slug, "provider": "mangataro"}, timeout=15)
-        out = []
-        for ch in r.json().get("chapters", []):
+    def chapters(self, manga_slug):
+        r = requests.get(f"{self.API_BASE}/chapters", params={"id": manga_slug, "provider": "mangataro"}, timeout=15)
+        chapters_data = r.json().get("chapters", [])
+
+        wp_base = "https://mangataro.org/wp-json/wp/v2/chapter"
+        batch_size = 50
+        num_to_url = {}
+        unresolved = {}
+
+        for i, ch in enumerate(chapters_data):
             num = str(ch["number"])
-            out.append({"url": f"{slug}:{num}", "num": num})
+            unresolved[i] = (num, ch["url"])
+
+        def query_slugs(slug_list):
+            if not slug_list:
+                return {}
+            result = {}
+            for start in range(0, len(slug_list), batch_size):
+                batch = slug_list[start:start + batch_size]
+                try:
+                    resp = requests.get(
+                        wp_base,
+                        params={"slug": ",".join(batch), "_fields": "slug,link", "per_page": 100},
+                        headers=self.HEADERS,
+                        timeout=30,
+                    )
+                    if resp.status_code == 200:
+                        for item in resp.json():
+                            result[item["slug"]] = item["link"]
+                except Exception:
+                    pass
+            return result
+
+        raw_slugs = []
+        for idx, (num, _) in unresolved.items():
+            raw = num.replace(".", "-")
+            raw_slugs.append(f"{manga_slug}-chapter-{raw}")
+
+        raw_results = query_slugs(raw_slugs)
+
+        resolved_raw = set()
+        for idx, (num, fallback) in unresolved.items():
+            raw = num.replace(".", "-")
+            slug = f"{manga_slug}-chapter-{raw}"
+            if slug in raw_results:
+                num_to_url[num] = raw_results[slug]
+                resolved_raw.add(idx)
+
+        alt_slugs = []
+        for idx, (num, _) in unresolved.items():
+            if idx in resolved_raw or "." in num:
+                continue
+            n = int(num)
+            for fmt in [n, f"{n:03d}", f"{n:02d}"]:
+                alt_slugs.append(f"{manga_slug}-chapter-{fmt}")
+        alt_results = query_slugs(alt_slugs)
+
+        for idx, (num, fallback) in unresolved.items():
+            if idx in resolved_raw:
+                continue
+            if "." in num:
+                num_to_url[num] = fallback
+                continue
+            n = int(num)
+            for fmt in [str(n), f"{n:03d}", f"{n:02d}"]:
+                slug = f"{manga_slug}-chapter-{fmt}"
+                if slug in alt_results:
+                    num_to_url[num] = alt_results[slug]
+                    break
+            else:
+                num_to_url[num] = fallback
+
+        out = [{"url": num_to_url.get(str(ch["number"]), ch["url"]), "num": str(ch["number"])} for ch in chapters_data]
         out.sort(key=lambda x: float(x["num"]))
         return out
 
     def pages(self, chapter_url):
-        slug, num = chapter_url.split(":", 1)
-        r = requests.get(f"{self.API_BASE}/pages", params={"id": slug, "chapterNumber": num, "provider": "mangataro"}, timeout=15)
-        return [p["url"] for p in r.json().get("pages", [])]
-
-
-class Mangaread:
-    name = "mangaread"
-    BASE = "https://www.mangaread.org"
-    HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-
-    def _html(self, url):
-        r = requests.get(url, headers=self.HEADERS, timeout=15)
-        r.raise_for_status()
-        return r.text
-
-    def search(self, query):
-        if not query:
-            raw = self._html(f"{self.BASE}/manga/?m_orderby=views")
-        else:
-            raw = self._html(f"{self.BASE}/?s={requests.utils.quote(query)}&post_type=wp-manga")
-        out = []
-        for m in re.finditer(r'<div[^>]*class=["\'][^"\']*post-title[^"\']*["\'][^>]*>.*?<a[^>]*href=["\']([^"\']+/manga/([^"\'/]+)/?)["\'][^>]*>([^<]+)</a>', raw, re.DOTALL):
-            slug, title = m.group(2), html.unescape(m.group(3).strip())
-            if slug == "feed":
-                continue
-            out.append({"slug": slug, "title": title, "source": self.name})
-        return out
-
-    def chapters(self, slug):
-        html = self._html(f"{self.BASE}/manga/{slug}/")
-        links = re.findall(r'href=[\'"]([^\'"]+/manga/{}/chapter-(\d+(?:[\.-]\d+)?)[^/]*/)[\'"]'.format(re.escape(slug)), html)
-        seen = set()
-        out = []
-        for url, num in links:
-            num_norm = num.replace('-', '.')
-            if num_norm not in seen:
-                seen.add(num_norm)
-                try:
-                    fnum = float(num_norm)
-                except ValueError:
-                    fnum = 0
-                out.append((url, num_norm, fnum))
-        out.sort(key=lambda x: x[2])
-        return [{"url": url, "num": num} for url, num, _ in out]
-
-    def pages(self, chapter_url):
-        if not chapter_url.startswith("http"):
-            chapter_url = self.BASE + chapter_url
-        html = self._html(chapter_url)
-        imgs = re.findall(r'<img[^>]*src=[\'"]([^\'"]+)[\'"]', html, re.DOTALL | re.IGNORECASE)
-        return [i.strip() for i in imgs if '/WP-manga/' in i]
-
-
-class Weebcentral:
-    name = "weebcentral"
-    BASE = "https://weebcentral.com"
-    HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    IMG_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                   "Referer": "https://weebcentral.com/"}
-
-    def __init__(self):
-        self._session = requests.Session()
-        self._session.headers.update(self.HEADERS)
-
-    def _get(self, path, params=None, htmx_target=None, referer=None):
-        headers = {}
-        if htmx_target:
-            headers["HX-Request"] = "true"
-            headers["HX-Target"] = htmx_target
-        if referer:
-            headers["Referer"] = referer
-            headers["HX-Current-URL"] = referer
-        r = self._session.get(f"{self.BASE}{path}", params=params, headers=headers, timeout=15)
-        r.raise_for_status()
-        return r.text
-
-    def search(self, query):
-        if not query:
+        if chapter_url in self._page_cache:
+            return self._page_cache[chapter_url]
+        r = requests.get(chapter_url, headers=self.HEADERS, timeout=15)
+        html = r.text
+        hash_match = re.search(r'/storage/chapters/([a-f0-9]+)/\d+\.webp', html)
+        if not hash_match:
             return []
-        params = {
-            "text": query, "sort": "Best Match", "order": "Descending",
-            "official": "Any", "anime": "Any", "adult": "Any",
-            "display_mode": "Full Display", "author": "",
-        }
-        raw = self._get("/search/data", params=params, htmx_target="search-results",
-                        referer=f"{self.BASE}/search?search={requests.utils.quote(query)}")
-        seen = set()
-        out = []
-        for a_match in re.finditer(r'<a\s+href="https://weebcentral\.com/series/([^/"]+)/([^/"]+)"[^>]*>.*?</a>', raw, re.DOTALL):
-            sid, slug = a_match.group(1), a_match.group(2)
-            if sid in seen:
-                continue
-            seen.add(sid)
-            inner = a_match.group(0)
-            img = re.search(r'<img[^>]*alt="([^"]+)"', inner)
-            if img:
-                title = html.unescape(img.group(1))
-                if title.endswith(" cover"):
-                    title = title[:-6].strip()
-            else:
-                title = slug.replace("-", " ").title()
-            out.append({"slug": sid, "title": title, "source": self.name})
-        return out
-
-    def chapters(self, series_id):
-        html = self._get(f"/series/{series_id}/full-chapter-list",
-                         htmx_target="chapter-list",
-                         referer=f"{self.BASE}/series/{series_id}/dummy")
-        entries = re.findall(r'<a[^>]*href=[\'"]([^\'"]+/chapters/[^\'"]+)[\'"][^>]*>(.*?)</a>', html, re.DOTALL)
-        seen = set()
-        out = []
-        for url, inner in entries:
-            text = re.sub(r'<[^>]+>', '', inner).strip()
-            num_match = re.search(r'#?\s*([\d.]+)', text)
-            if num_match:
-                num = num_match.group(1)
-                if num not in seen:
-                    seen.add(num)
-                    try:
-                        fnum = float(num)
-                    except ValueError:
-                        fnum = 0
-                    out.append((url, num, fnum))
-        out.sort(key=lambda x: x[2])
-        return [{"url": url, "num": num} for url, num, _ in out]
-
-    def pages(self, chapter_url):
-        ch_id = chapter_url.rstrip('/').split('/')[-1]
-        params = {"is_prev": "False", "current_page": "1"}
-        html = self._get(f"/chapters/{ch_id}/images", params=params,
-                         htmx_target="image-container",
-                         referer=f"{self.BASE}/chapters/{ch_id}")
-        imgs = re.findall(r'src="([^"]+)"', html)
-        return [i.strip() for i in imgs if i.startswith("http") and not any(x in i for x in ("/static/images/", "avatar", "logo", "icon"))]
+        storage_hash = hash_match.group(1)
+        base = f"{self.CDN}/storage/chapters/{storage_hash}"
+        urls = []
+        with ThreadPoolExecutor(max_workers=16) as ex:
+            fut_map = {}
+            for i in range(1, 101):
+                url = f"{base}/{i:03d}.webp"
+                fut = ex.submit(requests.get, url, headers=self.HEADERS, timeout=5)
+                fut_map[fut] = (i, url)
+            for fut in as_completed(fut_map):
+                i, url = fut_map[fut]
+                try:
+                    if fut.result().status_code == 200:
+                        urls.append((i, url))
+                except:
+                    pass
+        urls.sort(key=lambda x: x[0])
+        result = [u for _, u in urls]
+        self._page_cache[chapter_url] = result
+        return result
 
 
 class SourceManager:
     def __init__(self):
-        self.sources = [Weebcentral(), Mangataro(), Mangaread()]
-
-    @staticmethod
-    def _normalize(title):
-        s = title.lower()
-        s = re.sub(r"\s*[\(\[\{].*?[\)\]\}]", "", s)
-        s = re.sub(r"\s+-\s+manga$", "", s)
-        s = re.sub(r"[^a-z0-9\s]", "", s)
-        return re.sub(r"\s+", " ", s).strip()
+        self.sources = [Mangataro()]
 
     def search(self, query):
-        results = {}
+        results = []
         for src in self.sources:
             try:
                 for r in src.search(query):
-                    key = self._normalize(r["title"])
-                    if key not in results:
-                        results[key] = {
-                            "title": r["title"],
-                            "slugs": {},
-                            "sources": [],
-                        }
-                    results[key]["slugs"][src.name] = r["slug"]
-                    if src not in results[key]["sources"]:
-                        results[key]["sources"].append(src)
+                    results.append({
+                        "title": r["title"],
+                        "slugs": {src.name: r["slug"]},
+                        "sources": [src],
+                    })
             except Exception:
                 pass
-        return list(results.values())
+        return results
 
-    def chapters(self, manga):
-        merged = {}
-        for src in manga["sources"]:
-            slug = manga["slugs"].get(src.name)
-            if not slug:
-                continue
-            try:
-                chs = src.chapters(slug)
-                for ch in chs:
-                    num = ch["num"]
-                    if num not in merged:
-                        merged[num] = {"num": num, "sources": {}}
-                    merged[num]["sources"][src.name] = ch["url"]
-            except Exception:
-                pass
-        return [merged[k] for k in sorted(merged.keys(), key=lambda x: float(x.replace("-", ".")) if x.replace("-", "").replace(".", "").isdigit() else 0)]
-
-    @staticmethod
-    def _img_size(url, headers):
-        try:
-            r = requests.head(url, headers=headers, timeout=10)
-            return int(r.headers.get("Content-Length", 0)) or 0
-        except Exception:
-            return 0
-
-    def best_pages(self, chapter):
-        candidates = []
+    def chapters_for_source(self, manga, source_name):
         for src in self.sources:
+            if src.name == source_name:
+                slug = manga["slugs"].get(source_name)
+                if not slug:
+                    return []
+                try:
+                    return [{"num": ch["num"], "sources": {source_name: ch["url"]}} for ch in src.chapters(slug)]
+                except Exception:
+                    return []
+        return []
+
+    def get_pages(self, chapter, source_name):
+        for src in self.sources:
+            if src.name != source_name:
+                continue
             if src.name not in chapter["sources"]:
-                continue
-            ch_url = chapter["sources"][src.name]
+                return None, [], 0, {}
             try:
-                urls = src.pages(ch_url)
+                urls = src.pages(chapter["sources"][src.name])
             except Exception:
-                continue
-            if not urls:
-                continue
-            headers = getattr(src, "IMG_HEADERS", getattr(src, "HEADERS", {"User-Agent": "Mozilla/5.0"}))
-            size = self._img_size(urls[0], headers)
-            candidates.append((src.name, urls, len(urls), headers, size))
-
-        if not candidates:
+                return None, [], 0, {}
+            if urls:
+                headers = getattr(src, "IMG_HEADERS", getattr(src, "HEADERS", {"User-Agent": "Mozilla/5.0"}))
+                return src.name, urls, len(urls), headers
             return None, [], 0, {}
-
-        candidates.sort(key=lambda c: c[4], reverse=True)
-        best = candidates[0]
-        return best[0], best[1], best[2], best[3]
-
+        return None, [], 0, {}

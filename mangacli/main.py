@@ -3,7 +3,8 @@ import sys, io, os, re, tempfile, shutil, subprocess, random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 
-from mangacli import tracker
+from mangacli import tracker, volumes
+from mangacli.sources import natural_key
 
 try:
     from mangacli import anilist
@@ -18,6 +19,47 @@ try:
 except ImportError:
     from sources import SourceManager
 sm = SourceManager()
+
+
+class PageVerifier:
+    def __init__(self):
+        self.ref_ratio = None
+        self.established = False
+
+    def check(self, url, headers):
+        try:
+            from PIL import Image
+            resp = requests.get(url, headers=headers, timeout=10)
+            img = Image.open(io.BytesIO(resp.content))
+            w, h = img.size
+            ratio = w / h
+            if not self.established:
+                self.ref_ratio = ratio
+                self.established = True
+                return True
+            return abs(ratio / self.ref_ratio - 1) <= 0.15
+        except Exception:
+            return True
+
+    @staticmethod
+    def is_manga_page(url, headers):
+        try:
+            from PIL import Image
+            resp = requests.get(url, headers=headers, timeout=10)
+            img = Image.open(io.BytesIO(resp.content))
+            w, h = img.size
+            ratio = w / h
+            return ratio >= 0.3, ratio
+        except Exception:
+            return True, 1.0
+
+    @staticmethod
+    def check_source_pages(urls, headers):
+        for url in urls[:3]:
+            ok, ratio = PageVerifier.is_manga_page(url, headers)
+            if ratio < 0.2:
+                return False
+        return True
 
 
 def _getch():
@@ -56,20 +98,45 @@ def _clear():
     os.system("cls" if os.name == 'nt' else "clear")
 
 
+def _nav_lua():
+    lua = tempfile.NamedTemporaryFile(mode="w", suffix=".lua", delete=False)
+    lua.write("""
+function nav_right()
+    local cur = mp.get_property_number("playlist-pos-1")
+    local total = mp.get_property_number("playlist-count")
+    if cur and total and cur == total then
+        mp.commandv("quit", 4)
+    else
+        mp.commandv("playlist-next")
+    end
+end
+function nav_left()
+    mp.commandv("playlist-prev")
+end
+mp.add_key_binding("RIGHT", "nav-right", nav_right)
+mp.add_key_binding("LEFT", "nav-left", nav_left)
+""")
+    lua.close()
+    return lua.name
+
+
 def _mpv_view(files, title):
+    ls = _nav_lua()
     conf = tempfile.NamedTemporaryFile(mode="w", suffix=".conf", delete=False)
-    conf.write("RIGHT playlist-next\nLEFT playlist-prev\nq quit\n")
+    conf.write("q quit\n")
     conf.close()
     subprocess.run(["mpv", "--image-display-duration=inf", "--fs",
-                    "--really-quiet", f"--input-conf={conf.name}",
+                    "--really-quiet", f"--script={ls}",
+                    f"--input-conf={conf.name}",
                     f"--title={title}"] + files,
                    timeout=86400)
     os.unlink(conf.name)
+    os.unlink(ls)
 
 
-def _download_images(urls, tmp, headers):
+def _download_images(urls, tmp, headers, quiet=False):
     files = [None] * len(urls)
-    print(f"  Downloading {len(urls)} pages...", end="", flush=True)
+    total = len(urls)
 
     def _dl(i, purl):
         try:
@@ -82,15 +149,34 @@ def _download_images(urls, tmp, headers):
         except Exception:
             return i, None
 
+    if quiet:
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            futures = [ex.submit(_dl, i, u) for i, u in enumerate(urls)]
+            for f in as_completed(futures):
+                i, path = f.result()
+                files[i] = path
+        valid = [f for f in files if f]
+        return valid
+
+    bar_len = 14
+    done = 0
+    sys.stdout.write(f"  [{'░' * bar_len}] 0/{total}")
+    sys.stdout.flush()
+
     with ThreadPoolExecutor(max_workers=8) as ex:
         futures = [ex.submit(_dl, i, u) for i, u in enumerate(urls)]
         for f in as_completed(futures):
             i, path = f.result()
             files[i] = path
-            print(".", end="", flush=True)
+            done += 1
+            filled = int(bar_len * done / total)
+            bar = "▓" * filled + "░" * (bar_len - filled)
+            sys.stdout.write(f"\r  [{bar}] {done}/{total}")
+            sys.stdout.flush()
 
     valid = [f for f in files if f]
-    print(f" done ({len(valid)}/{len(urls)})")
+    sys.stdout.write(f"\r  [{'▓' * bar_len}] {len(valid)}/{total}\n")
+    sys.stdout.flush()
     return valid
 
 
@@ -144,11 +230,52 @@ def meme_loading(percent, total):
     return f"  {bar} {percent}/{total} {fact}"
 
 
-def _read_manga(manga, jump_chapter=None):
-    chs = sm.chapters(manga)
+def _mpv_view_vol(files, title):
+    ls = _nav_lua()
+    conf = tempfile.NamedTemporaryFile(mode="w", suffix=".conf", delete=False)
+    conf.write("q quit 5\nESC quit 5\n")
+    conf.close()
+    cp = subprocess.run(["mpv", "--image-display-duration=inf", "--fs",
+                         "--really-quiet", f"--script={ls}",
+                         f"--input-conf={conf.name}",
+                         f"--title={title}"] + files,
+                        timeout=86400)
+    os.unlink(conf.name)
+    os.unlink(ls)
+    return cp.returncode
+
+
+def _prefetch_pages(ch, cache_dir, chosen_src=None, consistency=None):
+    try:
+        best_src, page_urls, count, dl_headers = sm.get_pages(ch, chosen_src)
+        if not page_urls:
+            return None, None, None, True
+        ok = consistency.check(page_urls[0], dl_headers) if consistency else True
+        if not ok:
+            return None, None, None, False
+        tmp = tempfile.mkdtemp(prefix="manga_", dir=cache_dir)
+        files = _download_images(page_urls, tmp, dl_headers, quiet=True)
+        return files, tmp, best_src, True
+    except Exception:
+        return None, None, None, True
+
+
+def _read_manga(manga, jump_chapter=None, resume_vol=None, resume_source=None):
+    consistency = PageVerifier()
+    chosen_src = resume_source if resume_source else sm.sources[0].name
+
+    chs = sm.chapters_for_source(manga, chosen_src)
     if not chs:
         input("  No chapters available. Press Enter...")
         return
+
+    if not jump_chapter and resume_vol is None:
+        src, page_urls, count, dl_headers = sm.get_pages(chs[0], chosen_src)
+        if page_urls and not PageVerifier.check_source_pages(page_urls, dl_headers):
+            print("  ⚠ First chapter's pages look unusual (possible manhwa mixed in).")
+            c = input("  Continue anyway? [y/N]: ").strip().lower()
+            if c != "y":
+                return
 
     total_ch = len(chs)
     page_size = 100
@@ -162,6 +289,21 @@ def _read_manga(manga, jump_chapter=None):
                 cur_idx = i
                 cur_ch = chs[cur_idx]
                 break
+
+    if resume_vol is None:
+        vol_map = volumes.lookup(manga["title"], chs)
+        if vol_map:
+            _read_volume(manga, vol_map, chs, start_ch=jump_chapter, chosen_src=chosen_src, consistency=consistency)
+            return
+    elif resume_vol is not None:
+        vol_map = volumes.lookup(manga["title"], chs)
+        if vol_map and str(resume_vol) in vol_map:
+            _read_volume(manga, vol_map, chs, str(resume_vol), jump_chapter, chosen_src=chosen_src, consistency=consistency)
+            return
+        print("  Volume data not available. Falling back to chapter mode.")
+
+    cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "temp_img_load")
+    os.makedirs(cache_dir, exist_ok=True)
 
     while True:
         if cur_ch is None:
@@ -190,23 +332,32 @@ def _read_manga(manga, jump_chapter=None):
 
         while True:
             print(f"  Fetching Ch.{cur_ch['num']}...")
-            best_src, page_urls, count, dl_headers = sm.best_pages(cur_ch)
+            best_src, page_urls, count, dl_headers = sm.get_pages(cur_ch, chosen_src)
             if not page_urls:
                 input("  No pages found. Press Enter...")
                 break
+            if consistency and not consistency.check(page_urls[0], dl_headers):
+                print("  ⚠ Pages appear inconsistent with this series.")
+                c2 = input("  Read anyway? [y/N]: ").strip().lower()
+                if c2 != "y":
+                    break
 
-            cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "temp_img_load")
-            os.makedirs(cache_dir, exist_ok=True)
             tmp = tempfile.mkdtemp(prefix="manga_", dir=cache_dir)
             files = _download_images(page_urls, tmp, dl_headers)
             if not files:
                 input("  Download failed. Press Enter...")
                 break
 
-            _mpv_view(files, f"Ch.{cur_ch['num']}")
+            rc = _mpv_view(files, f"Ch.{cur_ch['num']}")
 
             tracker.record(manga["title"], cur_ch["num"], best_src or "?")
             anilist_msg = anilist.on_chapter_read(manga["title"], cur_ch["num"])
+
+            if rc == 4 and cur_idx < total_ch - 1:
+                shutil.rmtree(tmp, ignore_errors=True)
+                cur_idx += 1
+                cur_ch = chs[cur_idx]
+                continue
 
             _clear()
             sys.stdout.write(f"\n  Chapter finished.\n\n")
@@ -238,6 +389,125 @@ def _read_manga(manga, jump_chapter=None):
         cur_ch = None
 
 
+_prefetch_ex = ThreadPoolExecutor(max_workers=1)
+
+def _read_volume(manga, vol_map, chs, start_vol=None, start_ch=None, chosen_src=None, consistency=None):
+    ch_by_num = {ch["num"]: ch for ch in chs}
+    vol_nums = sorted(vol_map.keys(), key=natural_key)
+
+    if start_vol is None or start_vol not in vol_map:
+        _clear()
+        print(f"\n{'=' * 50}")
+        print(f"  Volumes")
+        print(f"{'=' * 50}")
+        for i, vn in enumerate(vol_nums, 1):
+            ch_list = vol_map[vn]
+            print(f"  {i:>3}. Volume {vn} ({len(ch_list)} chapters: Ch.{ch_list[0]}-{ch_list[-1]})")
+        try:
+            c = int(input("Select volume: ").strip())
+            if c < 1 or c > len(vol_nums):
+                return
+            start_vol = vol_nums[c - 1]
+        except ValueError:
+            return
+
+    cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "temp_img_load")
+    os.makedirs(cache_dir, exist_ok=True)
+
+    while start_vol in vol_map:
+        vol_chs = sorted(vol_map[start_vol], key=natural_key)
+        start_idx = 0
+        if start_ch is not None:
+            sc = str(start_ch)
+            if sc in vol_chs:
+                start_idx = vol_chs.index(sc)
+
+        prefetch_future = None
+        ci = start_idx
+        while ci < len(vol_chs):
+            ch_num = vol_chs[ci]
+            ch = ch_by_num.get(ch_num)
+            if not ch:
+                ci += 1
+                continue
+
+            if prefetch_future is None:
+                print(f"  ⟳ Vol.{start_vol} Ch.{ch_num}...")
+                best_src, page_urls, count, dl_headers = sm.get_pages(ch, chosen_src)
+                if not page_urls:
+                    input("  No pages found. Press Enter...")
+                    ci += 1
+                    continue
+                if consistency and not consistency.check(page_urls[0], dl_headers):
+                    print("  ⚠ Pages appear inconsistent with this series.")
+                    c2 = input("  Read anyway? [y/N]: ").strip().lower()
+                    if c2 != "y":
+                        ci += 1
+                        continue
+                tmp = tempfile.mkdtemp(prefix="manga_", dir=cache_dir)
+                files = _download_images(page_urls, tmp, dl_headers)
+                if not files:
+                    input("  Download failed. Press Enter...")
+                    ci += 1
+                    continue
+            else:
+                pfiles, ptmp, pbest, pok = prefetch_future.result()
+                if pfiles and pok:
+                    files, tmp, best_src = pfiles, ptmp, pbest
+                else:
+                    if not pok:
+                        print("  ⚠ Prefetched pages appear inconsistent.")
+                        c2 = input("  Read anyway? [y/N]: ").strip().lower()
+                        if c2 != "y":
+                            ci += 1
+                            continue
+                    ch2 = ch_by_num.get(vol_chs[ci])
+                    if ch2:
+                        pfiles2, tmp, best_src, _ = _prefetch_pages(ch2, cache_dir, chosen_src)
+                        files = pfiles2 or []
+                    else:
+                        files = []
+
+            if ci + 1 < len(vol_chs):
+                next_ch = ch_by_num.get(vol_chs[ci + 1])
+                if next_ch:
+                    prefetch_future = _prefetch_ex.submit(_prefetch_pages, next_ch, cache_dir, chosen_src, consistency)
+                else:
+                    prefetch_future = None
+            else:
+                prefetch_future = None
+
+            rc = _mpv_view_vol(files, f"Vol.{start_vol} Ch.{ch_num}")
+
+            tracker.record(manga["title"], ch_num, best_src or "?", volume=start_vol)
+            anilist.on_chapter_read(manga["title"], ch_num)
+
+            shutil.rmtree(tmp, ignore_errors=True)
+
+            if rc == 5:
+                return
+            ci += 1
+
+        _clear()
+        print(f"\n  Volume {start_vol} finished.")
+        vi = vol_nums.index(start_vol)
+        if vi + 1 < len(vol_nums):
+            print(f"  Next: Volume {vol_nums[vi + 1]}")
+            sys.stdout.write("  [n] Continue to next volume\n")
+            sys.stdout.write("  [q] Back\n")
+            sys.stdout.write("\n  Choose: ")
+            sys.stdout.flush()
+            nav = _getch()
+            if nav != "n":
+                break
+            start_vol = vol_nums[vi + 1]
+            start_ch = None
+        else:
+            print("  All volumes read!")
+            input("  Press Enter...")
+            break
+
+
 def _history_menu():
     all_titles = tracker.get_grouped()
     total = len(all_titles)
@@ -260,7 +530,8 @@ def _history_menu():
         print(f"{'=' * 50}")
 
         for i, t in enumerate(page_titles, 1):
-            label = f"{t['title']} - {len(t['chapters'])} ch. - last: Ch.{t['last_chapter']} - highest: Ch.{t['highest_chapter']}"
+            vol_label = f" - {len(t['vols'])} vols" if t.get("vols") else ""
+            label = f"{t['title']} - {len(t['chapters'])} ch. - last: Ch.{t['last_chapter']} - highest: Ch.{t['highest_chapter']}{vol_label}"
             print(f"  {i:>3}. {label}")
 
         if end < total:
@@ -284,6 +555,11 @@ def _history_menu():
             go = input(f"  Read {sel['title']}? [y/N]: ").strip().lower()
             if go == "y":
                 print(f"\n    [Enter] Last read (Ch.{sel['last_chapter']})")
+                if sel.get("vols"):
+                    lv = sel.get("last_volume")
+                    vd = sel["vols"].get(lv, {})
+                    lc = vd.get("c", sel["last_chapter"])
+                    print(f"    [v] Resume Vol.{lv} from Ch.{lc}")
                 print(f"    [h] Highest (Ch.{sel['highest_chapter']})")
                 print(f"    [c] Pick from chapter list")
                 pick = input("  Choose: ").strip().lower()
@@ -291,6 +567,10 @@ def _history_menu():
                     return sel["title"], sel["source"], sel["highest_chapter"]
                 elif pick == "c":
                     return sel["title"], sel["source"], None
+                elif pick == "v" and sel.get("vols"):
+                    lv = sel.get("last_volume")
+                    lc = sel["vols"].get(lv, {}).get("c", sel["last_chapter"])
+                    return sel["title"], sel["source"], lc, lv
                 else:
                     return sel["title"], sel["source"], sel["last_chapter"]
             continue
@@ -426,12 +706,16 @@ def main():
             result = _history_menu()
             if result is None:
                 continue
-            title, source, last_ch = result
+            if len(result) == 4:
+                title, source, last_ch, last_vol = result
+            else:
+                title, source, last_ch = result
+                last_vol = None
             mangas = sm.search(title)
-            for m in mangas:
-                if source in m.get("slugs", {}):
-                    _read_manga(m, jump_chapter=last_ch)
-                    break
+            if mangas:
+                _read_manga(mangas[0], jump_chapter=last_ch, resume_vol=last_vol, resume_source=source)
+            else:
+                input(f"  '{title}' not found. Press Enter...")
             continue
 
         elif choice == "4":

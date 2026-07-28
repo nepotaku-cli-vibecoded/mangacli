@@ -93,12 +93,10 @@ def _valid_token():
     return token.get("access_token")
 
 
-def _graphql(query, variables, access_token):
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
+def _graphql(query, variables, access_token=None):
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if access_token:
+        headers["Authorization"] = f"Bearer {access_token}"
     try:
         r = requests.post(API_URL, json={"query": query, "variables": variables}, headers=headers, timeout=15)
         if r.ok:
@@ -106,6 +104,10 @@ def _graphql(query, variables, access_token):
     except Exception:
         pass
     return None
+
+
+def _public_graphql(query, variables):
+    return _graphql(query, variables, access_token=None)
 
 
 _oauth_code = []
@@ -177,19 +179,54 @@ def search_media(title):
         Media(search: $search, type: MANGA) {
             id
             title { romaji english }
+            volumes
+            chapters
         }
     }
     """
     token = _valid_token()
-    if not token:
-        return None
-    data = _graphql(query, {"search": title}, token)
+    if token:
+        data = _graphql(query, {"search": title}, token)
+    else:
+        data = _public_graphql(query, {"search": title})
     if data:
         media = data.get("data", {}).get("Media")
         if media:
             return {
                 "media_id": media["id"],
                 "title": media["title"].get("english") or media["title"].get("romaji") or title,
+                "volumes": media.get("volumes"),
+                "chapters": media.get("chapters"),
+            }
+    return None
+
+
+def get_media_details(media_id):
+    query = """
+    query ($id: Int) {
+        Media(id: $id, type: MANGA) {
+            id
+            title { romaji english native }
+            volumes
+            chapters
+            status
+        }
+    }
+    """
+    token = _valid_token()
+    if token:
+        data = _graphql(query, {"id": media_id}, token)
+    else:
+        data = _public_graphql(query, {"id": media_id})
+    if data:
+        media = data.get("data", {}).get("Media")
+        if media:
+            return {
+                "media_id": media["id"],
+                "title": media["title"].get("english") or media["title"].get("romaji") or media["title"].get("native"),
+                "volumes": media.get("volumes"),
+                "chapters": media.get("chapters"),
+                "status": media.get("status"),
             }
     return None
 

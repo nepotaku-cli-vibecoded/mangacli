@@ -1,19 +1,19 @@
 # man-cli
 
-> "legally distinct from ani-cli" — the author, probably
+> "trust me bro, it's for educational purposes"
 
-A multi-source terminal manga reader — search, browse, and read manga directly in your terminal using mpv.
+A single-source terminal manga reader — search, browse by volumes, and read manga directly in your terminal using mpv.
 
 ## Features
 
-- **Multiple sources** — searches and merges results from Weebcentral, Mangataro, and Mangaread (no duplicates)
-- **Auto quality preference** — picks the source with the largest image file size (HEAD Content-Length check)
+- **Mangataro source** — searches and reads directly from mangataro.org
+- **Volume grouping** — chapters are grouped into volumes of 10 for organized browsing
+- **Manhwa detection** — PageVerifier checks page aspect ratios to catch long-strip manhwa mixed into manga results
 - **Parallel downloads** — downloads chapter pages concurrently (8 workers) for faster loading
 - **Fullscreen viewer** — opens mpv in fullscreen with arrow key navigation
-- **Reading history** — tracks last and highest chapter read per manga
+- **Reading history** — tracks last and highest chapter read per manga, with volume-level tracking
 - **AniList integration** — auto-links manga and updates chapter progress to your AniList list
 - **Cross-platform** — works on Windows, Linux, and macOS
-- **One-click launcher** — `Manga.exe` opens a fullscreen terminal with man-cli ready
 
 ## Dependencies
 
@@ -22,12 +22,9 @@ A multi-source terminal manga reader — search, browse, and read manga directly
 | **Python 3.8+** | [python.org](https://python.org) or system package |
 | **mpv** | `winget install mpv` (Windows) / `sudo apt install mpv` (Debian) / `sudo pacman -S mpv` (Arch) / `brew install mpv` (macOS) |
 | **requests** | `pip install requests` |
+| **Pillow** | `pip install Pillow` (optional — enables manhwa page verification) |
 
 ## Install
-
-### Windows — One-click launcher
-
-Clone or download the repo, then double-click `app_of_cli\Manga.exe` — it launches a fullscreen terminal and starts man-cli automatically.
 
 ### Manual install
 
@@ -76,16 +73,16 @@ python mangacli/main.py
   5. Exit
 ```
 
-- **Search** — type any title to find manga across all sources
+- **Search** — type any title to find manga
 - **Popular** — browse trending manga
-- **History** — shows all manga you've read, with last and highest chapter
+- **History** — shows all manga you've read, with last and highest chapter, plus volume tracking
 - **AniList** — one-time setup, then auto-track every chapter
 
-Select a manga → pick a chapter → reads automatically in **mpv** fullscreen.  
+Select a manga → choose a volume or chapter → reads automatically in **mpv** fullscreen.  
 **Arrow keys:** `→` next page, `←` previous page, `q` quit fullscreen.  
 After a chapter: `n` next, `p` previous, `q` back to list.
 
-Chapters are paginated (100 per page) with a "Next" option.
+Chapters are paginated (100 per page) with a "Next" option, or grouped into volumes for bulk reading.
 
 ## AniList Integration
 
@@ -103,14 +100,13 @@ After that, every chapter you read is silently synced to your AniList list. If a
 
 ## How it works
 
-1. **Search** queries multiple sources simultaneously
-2. Results are merged by normalized title — no duplicates if multiple sources have the same manga
-3. When reading a chapter, all available sources are checked for page availability
-4. The source with the largest image file size is preferred (HEAD Content-Length check)
-5. Pages are downloaded in parallel (8 threads) for speed
-6. mpv displays the images in fullscreen with keyboard navigation
-7. Downloaded images are cleaned up after you finish the chapter
-8. Your reading history is saved locally; AniList is updated automatically if linked
+1. **Search** queries the external manga-scrape API for manga titles on Mangataro
+2. Chapter numbers are resolved to correct URLs via Mangataro's WordPress REST API (handles varying slug formats like `chapter-1`, `chapter-001`, `chapter-002`)
+3. Chapter pages are scraped directly from mangataro.org to extract the storage hash
+4. Page images are probed from the CDN (`mangataro.yachts`) using parallel requests (16 workers)
+5. Pages are downloaded (8 threads) and displayed in mpv fullscreen
+6. Downloaded images are cleaned up after you finish the chapter
+7. Your reading history is saved locally; AniList is updated automatically if linked
 
 ## Notes
 

@@ -25,7 +25,7 @@ def _save(records):
         json.dump(records, f, separators=(',', ':'), ensure_ascii=False)
 
 
-def record(manga_title, chapter_num, source):
+def record(manga_title, chapter_num, source, volume=None):
     records = _load()
     ts = datetime.now(timezone.utc).isoformat()
     cn = str(chapter_num)
@@ -38,12 +38,22 @@ def record(manga_title, chapter_num, source):
                 r.setdefault("chs", []).append(cn)
             if float(cn) > float(r.get("hc", "0")):
                 r["hc"] = cn
+            if volume is not None:
+                vn = str(volume)
+                r["v"] = vn
+                vols = r.setdefault("vols", {})
+                vdata = vols.setdefault(vn, {"c": "0", "hc": "0"})
+                vdata["c"] = cn
+                if float(cn) > float(vdata.get("hc", "0")):
+                    vdata["hc"] = cn
             _save(records)
             return
-    records.append({
-        "t": manga_title, "c": cn, "s": source, "ts": ts,
-        "hc": cn, "chs": [cn],
-    })
+    entry = {"t": manga_title, "c": cn, "s": source, "ts": ts, "hc": cn, "chs": [cn]}
+    if volume is not None:
+        vn = str(volume)
+        entry["v"] = vn
+        entry["vols"] = {vn: {"c": cn, "hc": cn}}
+    records.append(entry)
     _save(records)
 
 
@@ -60,6 +70,8 @@ def get_grouped():
                 "last_ts": r["ts"],
                 "last_chapter": r["c"],
                 "highest_chapter": r.get("hc", r["c"]),
+                "last_volume": r.get("v"),
+                "vols": {},
             }
         g = groups[title]
         for ch in r.get("chs", [r["c"]]):
@@ -68,9 +80,12 @@ def get_grouped():
         if r["ts"] > g["last_ts"]:
             g["last_ts"] = r["ts"]
             g["last_chapter"] = r["c"]
+            g["last_volume"] = r.get("v")
         ghc = float(r.get("hc", r["c"]))
         if ghc > float(g["highest_chapter"]):
             g["highest_chapter"] = r.get("hc", r["c"])
+        for vn, vd in r.get("vols", {}).items():
+            g["vols"][vn] = {"c": vd["c"], "hc": vd.get("hc", vd["c"])}
     out = sorted(groups.values(), key=lambda x: x["last_ts"], reverse=True)
     return out
 
