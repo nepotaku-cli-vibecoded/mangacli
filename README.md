@@ -8,7 +8,6 @@ A single-source terminal manga reader — search, browse by volumes, and read ma
 
 - **Mangataro source** — searches and reads directly from mangataro.org
 - **Volume grouping** — chapters are grouped into volumes of 10 for organized browsing
-- **Manhwa detection** — PageVerifier checks page aspect ratios to catch long-strip manhwa mixed into manga results
 - **Parallel downloads** — downloads chapter pages concurrently (8 workers) for faster loading
 - **Fullscreen viewer** — opens mpv in fullscreen with arrow key navigation
 - **Reading history** — tracks last and highest chapter read per manga, with volume-level tracking
@@ -22,7 +21,6 @@ A single-source terminal manga reader — search, browse by volumes, and read ma
 | **Python 3.8+** | [python.org](https://python.org) or system package |
 | **mpv** | `winget install mpv` (Windows) / `sudo apt install mpv` (Debian) / `sudo pacman -S mpv` (Arch) / `brew install mpv` (macOS) |
 | **requests** | `pip install requests` |
-| **Pillow** | `pip install Pillow` (optional — enables manhwa page verification) |
 
 ## Install
 

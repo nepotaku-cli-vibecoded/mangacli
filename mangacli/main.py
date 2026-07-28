@@ -21,46 +21,6 @@ except ImportError:
 sm = SourceManager()
 
 
-class PageVerifier:
-    def __init__(self):
-        self.ref_ratio = None
-        self.established = False
-
-    def check(self, url, headers):
-        try:
-            from PIL import Image
-            resp = requests.get(url, headers=headers, timeout=10)
-            img = Image.open(io.BytesIO(resp.content))
-            w, h = img.size
-            ratio = w / h
-            if not self.established:
-                self.ref_ratio = ratio
-                self.established = True
-                return True
-            return abs(ratio / self.ref_ratio - 1) <= 0.15
-        except Exception:
-            return True
-
-    @staticmethod
-    def is_manga_page(url, headers):
-        try:
-            from PIL import Image
-            resp = requests.get(url, headers=headers, timeout=10)
-            img = Image.open(io.BytesIO(resp.content))
-            w, h = img.size
-            ratio = w / h
-            return ratio >= 0.3, ratio
-        except Exception:
-            return True, 1.0
-
-    @staticmethod
-    def check_source_pages(urls, headers):
-        for url in urls[:3]:
-            ok, ratio = PageVerifier.is_manga_page(url, headers)
-            if ratio < 0.2:
-                return False
-        return True
-
 
 def _getch():
     if os.name == 'nt':
@@ -245,37 +205,25 @@ def _mpv_view_vol(files, title):
     return cp.returncode
 
 
-def _prefetch_pages(ch, cache_dir, chosen_src=None, consistency=None):
+def _prefetch_pages(ch, cache_dir, chosen_src=None):
     try:
         best_src, page_urls, count, dl_headers = sm.get_pages(ch, chosen_src)
         if not page_urls:
-            return None, None, None, True
-        ok = consistency.check(page_urls[0], dl_headers) if consistency else True
-        if not ok:
-            return None, None, None, False
+            return None, None, None
         tmp = tempfile.mkdtemp(prefix="manga_", dir=cache_dir)
         files = _download_images(page_urls, tmp, dl_headers, quiet=True)
-        return files, tmp, best_src, True
+        return files, tmp, best_src
     except Exception:
-        return None, None, None, True
+        return None, None, None
 
 
 def _read_manga(manga, jump_chapter=None, resume_vol=None, resume_source=None):
-    consistency = PageVerifier()
     chosen_src = resume_source if resume_source else sm.sources[0].name
 
     chs = sm.chapters_for_source(manga, chosen_src)
     if not chs:
         input("  No chapters available. Press Enter...")
         return
-
-    if not jump_chapter and resume_vol is None:
-        src, page_urls, count, dl_headers = sm.get_pages(chs[0], chosen_src)
-        if page_urls and not PageVerifier.check_source_pages(page_urls, dl_headers):
-            print("  ⚠ First chapter's pages look unusual (possible manhwa mixed in).")
-            c = input("  Continue anyway? [y/N]: ").strip().lower()
-            if c != "y":
-                return
 
     total_ch = len(chs)
     page_size = 100
@@ -293,12 +241,12 @@ def _read_manga(manga, jump_chapter=None, resume_vol=None, resume_source=None):
     if resume_vol is None:
         vol_map = volumes.lookup(manga["title"], chs)
         if vol_map:
-            _read_volume(manga, vol_map, chs, start_ch=jump_chapter, chosen_src=chosen_src, consistency=consistency)
+            _read_volume(manga, vol_map, chs, start_ch=jump_chapter, chosen_src=chosen_src)
             return
     elif resume_vol is not None:
         vol_map = volumes.lookup(manga["title"], chs)
         if vol_map and str(resume_vol) in vol_map:
-            _read_volume(manga, vol_map, chs, str(resume_vol), jump_chapter, chosen_src=chosen_src, consistency=consistency)
+            _read_volume(manga, vol_map, chs, str(resume_vol), jump_chapter, chosen_src=chosen_src)
             return
         print("  Volume data not available. Falling back to chapter mode.")
 
@@ -336,12 +284,6 @@ def _read_manga(manga, jump_chapter=None, resume_vol=None, resume_source=None):
             if not page_urls:
                 input("  No pages found. Press Enter...")
                 break
-            if consistency and not consistency.check(page_urls[0], dl_headers):
-                print("  ⚠ Pages appear inconsistent with this series.")
-                c2 = input("  Read anyway? [y/N]: ").strip().lower()
-                if c2 != "y":
-                    break
-
             tmp = tempfile.mkdtemp(prefix="manga_", dir=cache_dir)
             files = _download_images(page_urls, tmp, dl_headers)
             if not files:
@@ -391,7 +333,7 @@ def _read_manga(manga, jump_chapter=None, resume_vol=None, resume_source=None):
 
 _prefetch_ex = ThreadPoolExecutor(max_workers=1)
 
-def _read_volume(manga, vol_map, chs, start_vol=None, start_ch=None, chosen_src=None, consistency=None):
+def _read_volume(manga, vol_map, chs, start_vol=None, start_ch=None, chosen_src=None):
     ch_by_num = {ch["num"]: ch for ch in chs}
     vol_nums = sorted(vol_map.keys(), key=natural_key)
 
@@ -438,12 +380,6 @@ def _read_volume(manga, vol_map, chs, start_vol=None, start_ch=None, chosen_src=
                     input("  No pages found. Press Enter...")
                     ci += 1
                     continue
-                if consistency and not consistency.check(page_urls[0], dl_headers):
-                    print("  ⚠ Pages appear inconsistent with this series.")
-                    c2 = input("  Read anyway? [y/N]: ").strip().lower()
-                    if c2 != "y":
-                        ci += 1
-                        continue
                 tmp = tempfile.mkdtemp(prefix="manga_", dir=cache_dir)
                 files = _download_images(page_urls, tmp, dl_headers)
                 if not files:
@@ -451,19 +387,13 @@ def _read_volume(manga, vol_map, chs, start_vol=None, start_ch=None, chosen_src=
                     ci += 1
                     continue
             else:
-                pfiles, ptmp, pbest, pok = prefetch_future.result()
-                if pfiles and pok:
+                pfiles, ptmp, pbest = prefetch_future.result()
+                if pfiles:
                     files, tmp, best_src = pfiles, ptmp, pbest
                 else:
-                    if not pok:
-                        print("  ⚠ Prefetched pages appear inconsistent.")
-                        c2 = input("  Read anyway? [y/N]: ").strip().lower()
-                        if c2 != "y":
-                            ci += 1
-                            continue
                     ch2 = ch_by_num.get(vol_chs[ci])
                     if ch2:
-                        pfiles2, tmp, best_src, _ = _prefetch_pages(ch2, cache_dir, chosen_src)
+                        pfiles2, tmp, best_src = _prefetch_pages(ch2, cache_dir, chosen_src)
                         files = pfiles2 or []
                     else:
                         files = []
@@ -471,7 +401,7 @@ def _read_volume(manga, vol_map, chs, start_vol=None, start_ch=None, chosen_src=
             if ci + 1 < len(vol_chs):
                 next_ch = ch_by_num.get(vol_chs[ci + 1])
                 if next_ch:
-                    prefetch_future = _prefetch_ex.submit(_prefetch_pages, next_ch, cache_dir, chosen_src, consistency)
+                    prefetch_future = _prefetch_ex.submit(_prefetch_pages, next_ch, cache_dir, chosen_src)
                 else:
                     prefetch_future = None
             else:
